@@ -9,6 +9,7 @@ FROM ghcr.io/hasnaintypes/hermes-agent-railway:latest
 # image's own venv at build time -- /opt/hermes is read-only at runtime,
 # so a live pip install wouldn't survive a redeploy anyway.
 USER root
-RUN /opt/hermes/.venv/bin/pip install --no-cache-dir psycopg2-binary
+RUN /opt/hermes/.venv/bin/python3 -m ensurepip --upgrade \
+    && /opt/hermes/.venv/bin/python3 -m pip install --no-cache-dir psycopg2-binary
 
 CMD ["gateway", "run"]
