@@ -17,7 +17,7 @@ The ordering principle carried over from the PRD: prove the core loop once (draf
 
 | Phase | Delivers | Depends on | Can parallelize with |
 | --- | --- | --- | --- |
-| 0. Foundation | Railway + Discord + Neon + repo scaffold, nothing agent-specific yet | — | — |
+| 0. Foundation ✅ | Railway + Discord + Neon + repo scaffold, nothing agent-specific yet | — | — |
 | 1. LinkedIn Agent + approval loop | The core draft → validate → approve → log loop, proven once | Phase 0 | — |
 | 2. Reddit Agent | Same loop, second platform | Phase 1 | Phase 3 |
 | 3. Project Manager | Read-only GitHub + Notion sync, tasks/projects tables | Phase 0 | Phase 2 |
@@ -39,7 +39,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 
 ## Phase Details
 
-### Phase 0 — Foundation
+### Phase 0 — Foundation ✅ Done (2026-09-28)
 
 **Build**
 
@@ -61,13 +61,19 @@ Every phase below follows the same shape so it can double as a checklist while b
   └── .env.example                 # placeholder names only, see Security.md
   ```
 - `src/memory/` gets its first migration here: the `agents` table only (bootstrap row per agent, written once by the orchestrator — see Data Model). Every other table (`tasks`, `drafts`, `miss_log`, etc.) is created in the phase that first needs it, not all up front — a `memory_chunks` table nothing writes to yet is dead schema.
-- Kill switch tested once per Security.md: pause the Railway service, confirm no Discord response and no cron firing, resume, confirm normal operation resumes.
+- Kill switch tested once per Security.md: pause the Railway service, confirm no Discord response and no cron firing, resume, confirm normal operation resumes. **Not yet done** — carry this over, do it before Phase 1's approval loop goes live unattended.
+
+**What it actually took to get here** (three real gotchas worth knowing before touching this deployment again):
+
+1. **Railway silently drops the container's `CMD` when the image has an inherited `VOLUME` instruction.** `nousresearch/hermes-agent`'s own Dockerfile declares `VOLUME ["/opt/data"]`, and Railway's runtime (confirmed via upstream issue [NousResearch/hermes-agent#91560](https://github.com/NousResearch/hermes-agent/issues/91560), still open/unfixed) mishandles that — the container falls back to the interactive `hermes` CLI instead of `gateway run`, and exits immediately since there's no TTY. Fixed by rebuilding the image with that instruction stripped (via `crane`/manual OCI manifest surgery, not a Dockerfile — Docker has no "unset VOLUME" instruction) and publishing the corrected copy to `ghcr.io/hasnaintypes/hermes-agent-railway:latest`. The repo's `Dockerfile` now builds `FROM` that fixed image, not directly from `nousresearch/hermes-agent`.
+2. **Discord platform auto-detection reads `/opt/data/.env` on disk, not the process environment.** Setting `DISCORD_BOT_TOKEN` / `DISCORD_ALLOWED_USERS` as Railway service variables makes them visible via `printenv` inside the container, but the gateway's platform-activation logic apparently only recognizes credentials written into the actual `.env` file on the persistent volume. Fixed by appending both vars directly into `/opt/data/.env` (survives redeploys since it's on the volume, but **does not survive a fresh volume** — if you ever recreate the volume, redo this step).
+3. **`config.yaml`'s `model.default` ships as the placeholder `anthropic/claude-opus-4.6`.** `provider: auto` correctly detects `gemini` from `GOOGLE_API_KEY` (confirmed by `hermes doctor`), but the model *name* still has to match a real Gemini model or every call 404s. Fixed with `hermes config set model.default gemini-3.7-flash` run inside the container. Note: an **already-open** chat session pins its model at creation and won't pick up a config change until you `/model <name>` it or `/new` a fresh session — a gateway/container restart alone does not reset that.
 
 **Data touched:** `agents` (created + first bootstrap row).
 
-**Credentials / env vars:** `DISCORD_BOT_TOKEN`, `NEON_CONNECTION_STRING`, model provider key(s) for Hermes itself.
+**Credentials / env vars:** `DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`, `NEON_CONNECTION_STRING`, `GOOGLE_API_KEY` (all set as Railway service variables; Discord's pair also duplicated into `/opt/data/.env` per gotcha #2 above).
 
-**Exit criteria:** Hasnain can message the bare orchestrator in Discord and get a response; the Hermes process can read and write Neon; the kill switch has been exercised once, not just documented.
+**Exit criteria:** Hasnain can message the bare orchestrator in Discord and get a response — ✅ confirmed 2026-09-28 (Gemini 3.7 Flash replied correctly to a DM). The Hermes process can read and write Neon — ✅ confirmed via the `0001_agents.sql` migration run directly against the pooled connection. Kill switch exercised — ⬜ still outstanding, do before Phase 1 ships.
 
 ### Phase 1 — LinkedIn Agent + Approval Loop
 
@@ -190,7 +196,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 
 | Phase | Manual test | Automated test | Sign-off condition |
 | --- | --- | --- | --- |
-| 0. Foundation | Message the bot in Discord, get a response | Neon connection healthcheck | Both pass once; kill switch exercised once |
+| 0. Foundation ✅ | Message the bot in Discord, get a response — done | Neon connection healthcheck — done | Kill switch still not exercised — do before Phase 1 goes unattended |
 | 1. LinkedIn Agent | Request, review, approve a real draft | State machine unit tests (all transitions, including the 2-pass retry cap) | 7 days unattended, no crashes, no runaway retries |
 | 2. Reddit Agent | Same, platform=reddit | Reuses Phase 1's suite against the new platform value | Same approval flow confirmed working, zero suite modifications needed |
 | 3. Project Manager | Change a Notion task, confirm it's reflected in `tasks` | Test asserting a GitHub write attempt is rejected by the token itself | 10-minute sync latency confirmed; zero GitHub writes possible |
