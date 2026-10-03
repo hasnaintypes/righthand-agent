@@ -19,7 +19,8 @@ The ordering principle carried over from the PRD: prove the core loop once (draf
 | --- | --- | --- | --- |
 | 0. Foundation ✅ | Railway + Discord + Neon + repo scaffold, nothing agent-specific yet | — | — |
 | 1. LinkedIn Agent + approval loop 🟡 | The core draft → validate → approve → log loop, proven once | Phase 0 | — |
-| 2. Reddit Agent | Same loop, second platform | Phase 1 | Phase 3 |
+| 1.5. Channel topology fix | Orchestrator-mediated relay + leaf-agent visibility channel, closing the Phase 1 UX gap | Phase 1 | — |
+| 2. Reddit Agent | Same loop, second platform | Phase 1.5 | Phase 3 |
 | 3. Project Manager | Read-only GitHub + Notion sync, tasks/projects tables | Phase 0 | Phase 2 |
 | 4. Rearrangement + morning briefing | Priority-aware scheduling, miss-streak detection, idea dump | Phase 3 | — |
 | 5. Dev.to + Medium Agents | Multi-platform content reuse | Phase 2 | Phase 6 |
@@ -104,10 +105,32 @@ Every phase below follows the same shape so it can double as a checklist while b
 - State machine unit tests cover the transitions, especially the 2-pass retry cap — ✅ `scripts/test_linkedin_draft.py`, three tests, run against the live Neon connection (checklist detection, clean-pass-through, and the cap itself: a draft that fails twice must escalate, never revise a second time).
 - Runs unattended for 7 days before Phase 2 starts — ⬜ clock started 2026-09-29, check back 2026-10-06.
 
+### Phase 1.5 — Channel Topology (standing convention, fixed first on LinkedIn)
+
+**Why this phase exists:** Phase 1 proved the draft/audit/approve state machine works, but the interaction shape was wrong — Hasnain invoked `/linkedin-approval-loop` himself and approved in that same conversation, which is leaf-agent-direct, not the PRD's single-point-of-contact orchestrator design. **This phase establishes the orchestrator-relay + per-agent-visibility-channel pattern as a standing rule for every leaf agent in the system** — LinkedIn is just where it gets built and proven first, because it's the only leaf agent that exists yet. Every phase from here on (Reddit, Project Manager, Dev.to/Medium, Learning Manager, Generic Manager) inherits this pattern automatically: create that agent's channel, delegate via `delegate_task`, narrate there, approve only in the main channel. None of those phases restate the mechanism — they just point back here. See Architecture Document's Channel Topology section for the full design and why it's one bot/profile with multiple channels, not one bot per agent.
+
+**Build**
+
+- Create the `#linkedin-agent` Discord channel in Hasnain's server (same bot, same server, just a second channel it's a member of — no new bot token, no new profile).
+- Rework the orchestrator's default conversational behavior (system-prompt / persona level, not a slash-command the user runs) so that a LinkedIn-flavored request in the main DM:
+  1. Is recognized by the orchestrator itself, not by Hasnain invoking `/linkedin-approval-loop`.
+  2. Delegates the actual drafting/audit work via Hermes's built-in `delegate_task` tool (`role="orchestrator"` on the parent).
+  3. Narrates progress into `#linkedin-agent` as it happens (drafting, audit result, revision if any) — visibility, not interaction.
+  4. Brings the finished draft back to the **main channel** and calls `clarify` there itself. **Hard rule: `clarify` is never called from inside the delegated leaf-agent task, only from the orchestrator's own turn in the main channel.**
+- Update `linkedin-approval-loop`'s `SKILL.md` to describe this as something the *orchestrator* invokes via delegation, not a skill Hasnain runs directly — the underlying `scripts/linkedin_draft.py` state machine is unchanged, only who calls it and where the approval surfaces changes.
+- Update `src/control-room/agents/linkedin-agent.md` to note its channel is `#linkedin-agent` (visibility only) and that it never calls `clarify` itself.
+
+**Data touched:** none new — same `drafts` table.
+
+**Credentials / env vars:** none new — same bot token, just a second channel ID it needs to know about (store the channel ID wherever the orchestrator's delegation logic reads config from; not a secret, doesn't need Security.md scoping).
+
+**Exit criteria:** Hasnain asks for a LinkedIn post in his normal DM (no slash command), watches drafting/audit activity appear in `#linkedin-agent`, and gets the approval `clarify` card back in his DM — never in the leaf-agent channel. Confirmed by checking `#linkedin-agent` shows narration but no approval buttons ever post there.
+
 ### Phase 2 — Reddit Agent
 
 **Build**
 
+- Create `#reddit-agent` and wire it into the orchestrator's delegation per Phase 1.5's standing convention — same mechanism as LinkedIn, no new pattern to design.
 - `src/agents/social-media-manager/reddit/skills/` — install `reddit-poster` (discover → draft → dry-run → approve flow, flair handling; [cskwork/reddit-skill](https://github.com/cskwork/reddit-skill)) and `reddit-insights` (semantic search for pain points/idea validation; [BrianRWagner/ai-marketing-claude-code-skills](https://github.com/BrianRWagner/ai-marketing-claude-code-skills), `reddit-insights/SKILL.md`).
 - Reuse Phase 1's `drafts` table and state machine unmodified — new rows with `platform = reddit`. No schema change, no new state machine.
 - Extend Social Media Manager's routing to send Reddit-tagged requests to `reddit/`, still processed sequentially after LinkedIn per the PRD's "Processing order" rule (SMM runs its four leaves one at a time, not in parallel) — confirm this ordering is actually enforced in the routing code, not just assumed.
@@ -123,6 +146,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 
 **Build**
 
+- Create `#project-manager` per Phase 1.5's standing convention — sync activity and nudges are narrated there; anything needing Hasnain's decision still surfaces via the orchestrator in the main channel.
 - Provision a read-only GitHub PAT or GitHub App installation scoped to exactly `contents:read` + `issues:read` — see Security.md, this is the highest-priority credential boundary in the whole system. Set as a Railway env var, never committed.
 - Connect Notion, scoped per-database (tasks, projects — not workspace-wide).
 - `src/agents/task-manager/project-manager/skills/` — install `triage-issue` in **read-only mode** ([warpdotdev/oz-for-oss](https://github.com/warpdotdev/oz-for-oss/blob/main/.agents/skills/triage-issue/SKILL.md), tool permissions scoped to read only — no label/comment/assign calls anywhere in its invoked path), `spec-to-implementation` ([tommy-ca/notion-skills](https://github.com/tommy-ca/notion-skills)), and `notion-cli` ([CaesiumY/notion-cli-skill](https://github.com/CaesiumY/notion-cli-skill)) for reading/writing only the Notion fields Project Manager owns (status, priority).
@@ -161,6 +185,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 
 **Build**
 
+- Create `#devto-agent` and `#medium-agent` per Phase 1.5's standing convention.
 - `src/agents/social-media-manager/devto/` — no dedicated "voice" skill exists for dev.to (per the PRD), so this agent reuses LinkedIn Agent's `linkedin-content-planner` output, reformatted, rather than drafting independently. Publishing via `publish-devto` (GitHub Action, [cloudx-labs/publish-devto](https://github.com/cloudx-labs/publish-devto)) or `devto-cli` ([rnag/devto-cli](https://github.com/rnag/devto-cli)) as the calling mechanism — but see Security.md: **no publish credential gets configured yet**, this phase produces formatted drafts/links only, same as LinkedIn/Reddit.
 - `src/agents/social-media-manager/medium/` — adapts the `publish-all` pattern ([iPythoning/publish-all](https://github.com/iPythoning/publish-all), extensible per-platform converter) for Medium's format, or `post-to-medium-action` ([philips-software/post-to-medium-action](https://github.com/philips-software/post-to-medium-action)) as the reference implementation to adapt from.
 - Both reuse Phase 1's `drafts` table (`platform = devto` / `platform = medium`) and the same state machine — no schema change.
@@ -176,6 +201,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 
 **Build**
 
+- Create `#learning-manager` per Phase 1.5's standing convention.
 - `src/agents/task-manager/learning-manager/skills/` — install `goal-tracker` (milestones, daily logging, weekly summary, HTML dashboard, nudges after 3+ days without progress; [bighardperson/computer-science-skills-collection](https://github.com/bighardperson/computer-science-skills-collection)) and `last30days` (researches a topic across Reddit/X/web from the last 30 days for resource curation; [BrianRWagner/ai-marketing-claude-code-skills](https://github.com/BrianRWagner/ai-marketing-claude-code-skills), `last30days/SKILL.md`).
 - `src/memory/` migration for `learning_tracks` (`track_id`, `name`, `priority_tier`, `milestone_state` — written by sync job + Learning Manager, read by Learning Manager).
 - **Mirror Phase 4's rearrangement and consecutive-miss logic exactly** onto `learning_tracks` — same priority field, same batching logic, same consecutive-miss check, applied to learning tracks (e.g. system design, interview prep) instead of projects. This should be close enough to Phase 4's implementation that most of it is reuse, not a parallel rewrite — if it isn't, that's a sign Phase 4 wasn't built generically enough.
@@ -191,6 +217,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 
 **Build**
 
+- Create `#generic-manager` per Phase 1.5's standing convention.
 - `src/agents/task-manager/generic-manager/skills/intake-and-route/` — the smallest, dumbest skill in the system per the PRD: takes unstructured input (text or voice, via Discord/Telegram) and routes it to the right agent or the Notion inbox. No off-the-shelf skill fits (it's inherently Hasnain-specific) — build thin, resist the temptation to make this "smart" in v1 (explicit PRD non-goal: no fully autonomous Generic/Routine Manager logic in v1).
 - Adopt the `hermes-agent-control-room` pattern fully now that all seven leaf agents exist: `src/control-room/agents/` should have one file per agent (role, skills, tools, status) for all seven, not just the ones added incrementally — do a pass to backfill any that were stubbed during earlier phases.
 - Add `skill-tracker` (git-backed PR review for self-modifying skills) — this is the point where the skill count actually justifies the overhead; don't add it earlier just because it's in the tech stack list.
@@ -209,6 +236,7 @@ Every phase below follows the same shape so it can double as a checklist while b
 | --- | --- | --- | --- |
 | 0. Foundation ✅ | Message the bot in Discord, get a response — done | Neon connection healthcheck — done | Kill switch still not exercised — do before Phase 1 goes unattended |
 | 1. LinkedIn Agent 🟡 | Request, review, approve a real draft — done | State machine unit tests (all transitions, including the 2-pass retry cap) — done | 7 days unattended — clock started 2026-09-29 |
+| 1.5. Channel topology | Ask in DM (no slash command), watch `#linkedin-agent`, approve in DM | — (prompt-level change, covered by manual test) | `clarify` never fires outside the main channel |
 | 2. Reddit Agent | Same, platform=reddit | Reuses Phase 1's suite against the new platform value | Same approval flow confirmed working, zero suite modifications needed |
 | 3. Project Manager | Change a Notion task, confirm it's reflected in `tasks` | Test asserting a GitHub write attempt is rejected by the token itself | 10-minute sync latency confirmed; zero GitHub writes possible |
 | 4. Rearrangement | Deliberately miss 3 days of tasks, confirm the retry-or-reduce prompt fires | Unit tests on the batching and priority logic | 7 consecutive days of on-time morning briefings |

@@ -26,6 +26,25 @@ flowchart TD
 
 The orchestrator is the only component with a human-facing surface. Every manager and leaf agent is reachable only through it — there is no path for Hasnain to message a sub-agent directly, and no path for a sub-agent to message Hasnain except by routing through the orchestrator's Discord channel.
 
+## Channel Topology
+
+**Added 2026-09-29**, after Phase 1 exposed a gap: the first LinkedIn approval loop had Hasnain invoking the LinkedIn agent's skill directly and approving in that same conversation — leaf-agent-direct, not orchestrator-mediated, defeating the PRD's single-point-of-contact design. **This is a standing rule for every leaf agent in the system, not a LinkedIn-specific fix** — LinkedIn is just the first one built, and so the first one this rule applies to. Every leaf agent added in Phases 2–7 (Reddit, Dev.to, Medium, Project Manager, Learning Manager, Generic Manager) follows the exact same pattern described here; none of them get bespoke treatment.
+
+```mermaid
+flowchart LR
+    H[Hasnain] <-->|DM: the only<br/>interaction surface| O[Orchestrator]
+    O -.narrates progress.-> LC["#&lt;agent&gt;-agent channel<br/>(read-only for Hasnain)"]
+    O -.delegate_task.-> LA[Any leaf agent's logic]
+    LA -.result.-> O
+    O -->|clarify approval card| H
+```
+
+**One Hermes profile, one Discord bot token, multiple channels — not one bot per agent.** Hermes profiles are fully independent ("islands" — separate config, memory, state) and *"a bot can only belong to one profile"*: giving every leaf agent its own Discord identity would mean creating a separate Discord application/bot token per agent (seven of them, eventually), inviting each one, and managing seven separate deployments. That's unnecessary — the requirement is **visibility**, not a separate identity, so one bot operating in multiple channels of the same server covers all seven:
+
+- **Main channel (DM).** Hasnain's only interaction surface, for every agent. All requests go here; all approvals come back here, regardless of which leaf agent did the work.
+- **One dedicated channel per leaf agent**, created as each one goes live: `#linkedin-agent` (Phase 1), then `#reddit-agent` (Phase 2), `#project-manager` (Phase 3), `#devto-agent` / `#medium-agent` (Phase 5), `#learning-manager` (Phase 6), `#generic-manager` (Phase 7). The orchestrator posts narration into the relevant channel as it delegates work — "drafting...", "audit flagged X, revising...", "clean, bringing it to you" — using the same Discord bot's ability to post to any channel it's a member of. Hasnain can read any of these any time; he never needs to post in them, and nothing in them ever asks him anything.
+- **The relay mechanism is `delegate_task`**, Hermes's built-in subagent tool (supports `role="orchestrator"` on the parent, scoped child context) — not a second profile, not a second bot, and the same mechanism for every agent. The orchestrator delegates the actual work (drafting, syncing, tracking — whatever that leaf agent does), relays progress to its channel, and when the child returns a result, the orchestrator itself calls `clarify` in the main channel. **The hard rule, for every leaf agent without exception:** `clarify` is only ever called from the orchestrator's own turn in the main channel — a leaf-agent delegation never calls `clarify` directly, even though it technically could. This is a prompt-level rule for now (enforced by each leaf agent's `SKILL.md` instructions and the orchestrator's own system prompt), not something Hermes blocks structurally — worth revisiting if a future leaf agent's skill ever gets invoked outside orchestrator delegation.
+
 ## Deployment Topology
 
 ```mermaid
